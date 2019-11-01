@@ -1,2 +1,2 @@
 # ServiceNowIntegrator
-CommandLine and Web interface for SN Api Integration
+CommandLine and HTTP (Web Hook) interface for Service Now (Api Integration)
