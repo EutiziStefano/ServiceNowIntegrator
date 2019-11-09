@@ -5,7 +5,6 @@ package main
 import(
 	"fmt"
 	"github.com/magiconair/properties"
-	"encoding/json"
 	"bytes"
 	"net/http"
 	"net/url"
@@ -13,7 +12,8 @@ import(
 	"time"
 	"io/ioutil"
 	"os"
-
+	"log"
+	"encoding/json"
 )
 
 var MODE = ""
@@ -382,7 +382,26 @@ func checkProxy(proxy string) (success bool, errorMessage string) {
 }
 
 func startServer() {
-	
-	 fmt.Printf("Starting HTTP SERVER on port %s \n",http_port)
+	fmt.Printf("Starting HTTP SERVER on port %s \n",http_port)
+	http.HandleFunc("/", WebServerHandler)
+    http.ListenAndServe(":"+http_port, nil)
 }
-
+type test_struct struct {
+    Hostname string
+}
+func WebServerHandler(w http.ResponseWriter, r *http.Request) {
+	action := r.URL.Path[1:]
+    log.Println("Action: " + action)
+	body, err := ioutil.ReadAll(r.Body)
+    if err != nil {
+        panic(err)
+    }
+    log.Println("Body: " + string(body))
+    var t test_struct
+    err = json.Unmarshal(body, &t)
+    if err != nil {
+        panic(err)
+    }
+    log.Println(t.Hostname)
+	
+}
