@@ -1,19 +1,20 @@
 package main
+
 /**
-   ServiceNow Integration
+  ServiceNow Integration
 */
-import(
+import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/magiconair/properties"
-	"bytes"
+	"github.com/op/go-logging"
+	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
-	"io/ioutil"
-	"os"
-	"log"
-	"encoding/json"
 )
 
 var MODE = ""
@@ -28,11 +29,21 @@ var LOGLEVEL = ""
 var proxies = ""
 var http_port = ""
 var PROXYBUONO = ""
+
+var log = logging.MustGetLogger("example")
+
+// Example format string. Everything except the message has a custom color
+// which is dependent on the log level. Many fields have a custom output
+// formatting too, eg. the time returns the hour down to the milli second.
+var format = logging.MustStringFormatter(
+	`%{color}%{time:15:04:05.000} %{shortfunc} %{level:.4s} %{id:03x}%{color:reset} %{message}`,
+)
+
 func main() {
 
 	propertyfile := "SNIntegrator.properties"
 	prop := properties.MustLoadFile(propertyfile, properties.UTF8)
-    
+
 	MODE = prop.GetString("MODE", "")
 	SNurl = prop.GetString("SNurl", "")
 	user = prop.GetString("user", "")
@@ -45,102 +56,109 @@ func main() {
 	proxies = prop.GetString("proxies", "")
 	http_port = prop.GetString("http_port", "")
 	PROXYBUONO = proxyselect()
-	
-    switch MODE {
-		case "CLI":
-			executable(os.Args)
-			
-		case "HTTP":
-			startServer()
-		
-		default:
-			fmt.Printf("\n MODE incorrect or properties file  not found \n\n")
-			os.Exit(2)
+
+	lev, _ := logging.LogLevel(LOGLEVEL)
+	backend := logging.NewLogBackend(os.Stderr, "", 0)
+	backendFormatter := logging.NewBackendFormatter(backend, format)
+	backendLeveled := logging.AddModuleLevel(backendFormatter)
+	backendLeveled.SetLevel(lev, "")
+	logging.SetBackend(backendLeveled)
+
+	switch MODE {
+	case "CLI":
+		executable(os.Args)
+
+	case "HTTP":
+		startServer()
+
+	default:
+		fmt.Printf("\n MODE incorrect or properties file  not found \n\n")
+		os.Exit(2)
 	}
-	
-}	
-	
-func executable(Args []string) {	
+
+}
+
+//  incident 'Hostname' 'Assigned Group' 'Short Description' 'Description'
+//  event_x|alert_x 'Hostname' 'Assigned Group' 'Description' 'MessageKey'
+func executable(Args []string) {
 	start := time.Now()
 	event_time := start.UTC().Format("2006-01-02 15:04:05")
-	
-   	argsWithoutProg := Args[1:]
+
+	argsWithoutProg := Args[1:]
 	Prog := Args[0]
 
-    if len(argsWithoutProg) < 1 {
+	if len(argsWithoutProg) < 1 {
 		fmt.Printf("\n Usage: %s TASK 'TASK PARAMETER' \n\n TASKS:", Prog)
 		fmt.Printf("\n    - incident \n    - alert_critical \n    - alert_info \n    - event_critical \n    - event_info \n\n")
 		os.Exit(1)
-    }
-	
+	}
+
 	action := Args[1]
-	call_ok := false	
-    
+	call_ok := false
+
 	hostname := ""
 	if len(argsWithoutProg) > 2 {
 		hostname = Args[2]
-    }	
-	
-
+	}
 
 	switch action {
 
 	case "incident":
 		fmt.Println("incident")
-        	if len(argsWithoutProg) != 5 {
-			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP SHORT_DESCRIPTION DESCRIPTION \n\n",action,Prog,action)
+		if len(argsWithoutProg) != 5 {
+			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP SHORT_DESCRIPTION DESCRIPTION \n\n", action, Prog, action)
 			os.Exit(1)
 		}
-		call_ok=openIncident(Args[3],Args[4],Args[5],event_time,hostname,PROXYBUONO) 
+		call_ok = openIncident(Args[3], Args[4], Args[5], event_time, hostname, PROXYBUONO)
 
 	case "alert_critical":
-        	if len(argsWithoutProg) != 5 {
-			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n",action,Prog,action)
+		if len(argsWithoutProg) != 5 {
+			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n", action, Prog, action)
 			os.Exit(1)
 		}
 		fmt.Println("alert critical")
-		call_ok=openAlert(Args[3],Args[4],Args[5],"1",hostname,event_time,PROXYBUONO)
+		call_ok = openAlert(Args[3], Args[4], Args[5], "1", hostname, event_time, PROXYBUONO)
 
 	case "alert_info":
-        	if len(argsWithoutProg) != 5 {
-			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n",action,Prog,action)
+		if len(argsWithoutProg) != 5 {
+			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n", action, Prog, action)
 			os.Exit(1)
 		}
 		fmt.Println("alert_info")
-		call_ok=openAlert(Args[3],Args[4],Args[5],"5",hostname,event_time,PROXYBUONO)
+		call_ok = openAlert(Args[3], Args[4], Args[5], "5", hostname, event_time, PROXYBUONO)
 
 	case "event_critical":
-        	if len(argsWithoutProg) != 5 {
-			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n",action,Prog,action)
+		if len(argsWithoutProg) != 5 {
+			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n", action, Prog, action)
 			os.Exit(1)
 		}
 		fmt.Println("event_critical")
-		call_ok=openEvent(Args[3],Args[4],Args[5],"1","Ready",hostname,PROXYBUONO)
+		call_ok = openEvent(Args[3], Args[4], Args[5], "1", "Ready", hostname, PROXYBUONO)
 
 	case "event_info":
-        	if len(argsWithoutProg) != 5 {
-			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n",action,Prog,action)
+		if len(argsWithoutProg) != 5 {
+			fmt.Printf("\n Usage of the Task %s: %s %s HOSTNAME GROUP DESCRIPTION MESSAGE_KEY\n\n", action, Prog, action)
 			os.Exit(1)
 		}
 		fmt.Println("event_info")
-		call_ok=openEvent(Args[3],Args[4],Args[5],"5","Processed",hostname,PROXYBUONO)
+		call_ok = openEvent(Args[3], Args[4], Args[5], "5", "Processed", hostname, PROXYBUONO)
 
 	default:
-		fmt.Printf("\n Task \"%s\" unknown \n\n",action)
+		fmt.Printf("\n Task \"%s\" unknown \n\n", action)
 		os.Exit(2)
 	}
 
-	if ! call_ok {
-		fmt.Printf("\n Error executing Task \"%s\", if you need to configure a proxy to reach ServiceNow API create the file /etc/SN_proxy.conf with one or a list of comma separated Proxy \n\n",action)
-                os.Exit(3)
+	if !call_ok {
+		fmt.Printf("\n Error executing Task \"%s\", if you need to configure a proxy to reach ServiceNow API create the file /etc/SN_proxy.conf with one or a list of comma separated Proxy \n\n", action)
+		os.Exit(3)
 	}
 }
 
 // ########
 // INCIDENT
 // ########
-func openIncident(g string,sd string,d string,t string,ci string,proxyStr string) bool {
-        ret := true
+func openIncident(g string, sd string, d string, t string, ci string, proxyStr string) bool {
+	ret := true
 	type Payload struct {
 		ShortDescription   string `json:"short_description"`
 		Description        string `json:"description"`
@@ -152,48 +170,47 @@ func openIncident(g string,sd string,d string,t string,ci string,proxyStr string
 		CallerID           string `json:"caller_id"`
 	}
 	data := Payload{
-		ShortDescription: sd,
-		Description: d,
-		AssignmentGroup: g,
-		CmdbCi: ci,
-		Urgency: "1",
+		ShortDescription:   sd,
+		Description:        d,
+		AssignmentGroup:    g,
+		CmdbCi:             ci,
+		Urgency:            "1",
 		UInizioDisservizio: t,
-		CallerID: CallerID,
-		Impact: "1"}
+		CallerID:           CallerID,
+		Impact:             "1"}
 
 	payloadBytes, err := json.Marshal(data)
 	if err != nil {
-		fmt.Printf("ERROR",err)
+		fmt.Printf("ERROR", err)
 		return false
 	}
 	body := bytes.NewReader(payloadBytes)
-	
-	req, err := http.NewRequest("POST", SNurl + "/api/now/table/incident", body)
+
+	req, err := http.NewRequest("POST", SNurl+"/api/now/table/incident", body)
 	if err != nil {
-		fmt.Printf("Errore",err)
-		return false	
+		fmt.Printf("Errore", err)
+		return false
 	}
 	req.SetBasicAuth(user, password)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	
-	client := http.DefaultClient	
 
+	client := http.DefaultClient
 
-	if(proxyStr != ""){	
-       		fmt.Println("Uso il proxy "+proxyStr)
-    		proxyURL, err := url.Parse(proxyStr)
+	if proxyStr != "" {
+		fmt.Println("Uso il proxy " + proxyStr)
+		proxyURL, err := url.Parse(proxyStr)
 		if err != nil {
-        		fmt.Println("Errore nell'indirizzo del proxy")
+			fmt.Println("Errore nell'indirizzo del proxy")
 			os.Exit(5)
 		}
-		transport := &http.Transport{ Proxy: http.ProxyURL(proxyURL) }
-        client = &http.Client{Transport: transport}
+		transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		client = &http.Client{Transport: transport}
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("Error",err)
+		fmt.Printf("Error", err)
 		return false
 	}
 	defer resp.Body.Close()
@@ -203,9 +220,9 @@ func openIncident(g string,sd string,d string,t string,ci string,proxyStr string
 // ########
 // ALERT
 // ########
-func openAlert(group string,desc string,mk string,severity string,node string,time string,proxyStr string) bool {
-        ret := true
-	
+func openAlert(group string, desc string, mk string, severity string, node string, time string, proxyStr string) bool {
+	ret := true
+
 	type Payload struct {
 		UMessageGroup string `json:"u_message_group"`
 		Source        string `json:"source"`
@@ -217,50 +234,50 @@ func openAlert(group string,desc string,mk string,severity string,node string,ti
 		Node          string `json:"node"`
 		Time          string `json:"initial_event_time"`
 	}
-	
+
 	data := Payload{
 		UMessageGroup: UMessageGroup,
-		Source: Source,
-		Severity: severity,    
-		CmdbCi: node,      
-		Description: desc, 
-		MessageKey: mk,  
-		MetricName: group,
-		Node: node,
-        Time: time}
+		Source:        Source,
+		Severity:      severity,
+		CmdbCi:        node,
+		Description:   desc,
+		MessageKey:    mk,
+		MetricName:    group,
+		Node:          node,
+		Time:          time}
 
 	payloadBytes, err := json.Marshal(data)
 	if err != nil {
-		fmt.Printf("Errore",err)
+		fmt.Printf("Errore", err)
 		return false
 	}
 	body := bytes.NewReader(payloadBytes)
-	
-	req, err := http.NewRequest("POST", SNurl + "/api/now/table/em_alert", body)
+
+	req, err := http.NewRequest("POST", SNurl+"/api/now/table/em_alert", body)
 	if err != nil {
-		fmt.Printf("Error",err)
+		fmt.Printf("Error", err)
 		return false
 	}
 	req.SetBasicAuth(user, password)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	
-	client := http.DefaultClient	
 
-	if(proxyStr != ""){	
-       		fmt.Println("Uso il proxy "+proxyStr)
-    		proxyURL, err := url.Parse(proxyStr)
+	client := http.DefaultClient
+
+	if proxyStr != "" {
+		fmt.Println("Uso il proxy " + proxyStr)
+		proxyURL, err := url.Parse(proxyStr)
 		if err != nil {
-        		fmt.Println("Errore nell'indirizzo del proxy")
+			fmt.Println("Errore nell'indirizzo del proxy")
 			os.Exit(5)
 		}
-		transport := &http.Transport{ Proxy: http.ProxyURL(proxyURL) }
-        	client = &http.Client{Transport: transport}
+		transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		client = &http.Client{Transport: transport}
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("Errore",err)
+		fmt.Printf("Errore", err)
 		return false
 	}
 	defer resp.Body.Close()
@@ -268,13 +285,12 @@ func openAlert(group string,desc string,mk string,severity string,node string,ti
 	return ret
 }
 
-
 // ########
 // EVENT
 // ########
-func openEvent(group string,desc string,mk string,severity string,stato string,node string,proxyStr string) bool {
-        ret := true
-	
+func openEvent(group string, desc string, mk string, severity string, stato string, node string, proxyStr string) bool {
+	ret := true
+
 	type Payload struct {
 		Description    string `json:"description"`
 		Node           string `json:"node"`
@@ -288,49 +304,48 @@ func openEvent(group string,desc string,mk string,severity string,stato string,n
 	}
 
 	data := Payload{
-		Description: desc,  
-		Node: node,
-		State: stato,
-		Classification:	"IT",
-		EventClass: EventClass,
-		Severity: severity,
-		Source: Source,
-		MessageKey: mk, 
-		MetricName: group } 
+		Description:    desc,
+		Node:           node,
+		State:          stato,
+		Classification: "IT",
+		EventClass:     EventClass,
+		Severity:       severity,
+		Source:         Source,
+		MessageKey:     mk,
+		MetricName:     group}
 
 	payloadBytes, err := json.Marshal(data)
 	if err != nil {
-		fmt.Printf("Errore",err)
+		fmt.Printf("Errore", err)
 		return false
 	}
 	body := bytes.NewReader(payloadBytes)
 
-	req, err := http.NewRequest("POST", SNurl + "/api/now/table/em_event", body)
+	req, err := http.NewRequest("POST", SNurl+"/api/now/table/em_event", body)
 	if err != nil {
-		fmt.Printf("Errore",err)
+		fmt.Printf("Errore", err)
 		return false
 	}
 	req.SetBasicAuth(user, password)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
-	client := http.DefaultClient	
+	client := http.DefaultClient
 
-
-	if(proxyStr != ""){	
-       		fmt.Println("Uso il proxy "+proxyStr)
-    		proxyURL, err := url.Parse(proxyStr)
+	if proxyStr != "" {
+		fmt.Println("Uso il proxy " + proxyStr)
+		proxyURL, err := url.Parse(proxyStr)
 		if err != nil {
-        		fmt.Println("Errore nell'indirizzo del proxy")
+			fmt.Println("Errore nell'indirizzo del proxy")
 			os.Exit(5)
 		}
-		transport := &http.Transport{ Proxy: http.ProxyURL(proxyURL) }
-        	client = &http.Client{Transport: transport}
+		transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		client = &http.Client{Transport: transport}
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("Errore",err)
+		fmt.Printf("Errore", err)
 		return false
 	}
 	defer resp.Body.Close()
@@ -341,32 +356,44 @@ func openEvent(group string,desc string,mk string,severity string,stato string,n
 //
 //
 
-func proxyselect() string{
+func proxyselect() string {
 	proxylist := strings.Split(proxies, string(','))
-	for i := 0 ; i < len(proxylist) ; i++ {
-		proxy := strings.Trim(proxylist[i]," ")
-		if LOGLEVEL == "DEBUG" { fmt.Printf("Provo il proxy %v \n",proxy)}
-		if !strings.HasPrefix(proxy, "http") { proxy = "http://" + proxy }
-		retbool,errore := checkProxy(proxy)
-		if LOGLEVEL == "DEBUG" { fmt.Printf("Testato il proxy %v, ritorno %v - %v \n",proxy,retbool,errore)}
-                if retbool {
-			if LOGLEVEL == "DEBUG" { fmt.Printf("Trovato il proxy %v \n",proxy)}
+	for i := 0; i < len(proxylist); i++ {
+		proxy := strings.Trim(proxylist[i], " ")
+		if LOGLEVEL == "DEBUG" {
+			fmt.Printf("Provo il proxy %v \n", proxy)
+		}
+		if !strings.HasPrefix(proxy, "http") {
+			proxy = "http://" + proxy
+		}
+		retbool, errore := checkProxy(proxy)
+		if LOGLEVEL == "DEBUG" {
+			fmt.Printf("Testato il proxy %v, ritorno %v - %v \n", proxy, retbool, errore)
+		}
+		if retbool {
+			if LOGLEVEL == "DEBUG" {
+				fmt.Printf("Trovato il proxy %v \n", proxy)
+			}
 			return proxy
-		} 
-	}	
+		}
+	}
 	return ""
 
 }
 
-func checkProxy(proxy string) (success bool, errorMessage string) {	
+func checkProxy(proxy string) (success bool, errorMessage string) {
 	proxyUrl, err := url.Parse(proxy)
 	timeout := time.Duration(3 * time.Second)
-	httpClient := &http.Client { Transport: &http.Transport { Proxy: http.ProxyURL(proxyUrl) }, Timeout: timeout}
+	httpClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyUrl)}, Timeout: timeout}
 	response, err := httpClient.Get(SNurl)
-	if err != nil { return false, err.Error() }
+	if err != nil {
+		return false, err.Error()
+	}
 
 	body, err := ioutil.ReadAll(response.Body)
-	if err != nil { return false, err.Error() }
+	if err != nil {
+		return false, err.Error()
+	}
 
 	bodyString := strings.ToLower(strings.Trim(string(body), " \n\t\r"))
 
@@ -382,26 +409,74 @@ func checkProxy(proxy string) (success bool, errorMessage string) {
 }
 
 func startServer() {
-	fmt.Printf("Starting HTTP SERVER on port %s \n",http_port)
+	fmt.Printf("Starting HTTP SERVER on port %s \n", http_port)
 	http.HandleFunc("/", WebServerHandler)
-    http.ListenAndServe(":"+http_port, nil)
+	http.ListenAndServe(":"+http_port, nil)
 }
+
 type test_struct struct {
-    Hostname string
+	Message string
+	RuleUrl string
 }
+
 func WebServerHandler(w http.ResponseWriter, r *http.Request) {
-	action := r.URL.Path[1:]
-    log.Println("Action: " + action)
+	//context := r.URL.Path[1:]
 	body, err := ioutil.ReadAll(r.Body)
-    if err != nil {
-        panic(err)
-    }
-    log.Println("Body: " + string(body))
-    var t test_struct
-    err = json.Unmarshal(body, &t)
-    if err != nil {
-        panic(err)
-    }
-    log.Println(t.Hostname)
-	
+	if err != nil {
+		panic(err)
+	}
+	//log.Println("Body: " + string(body))
+	var t test_struct
+	err = json.Unmarshal(body, &t)
+	if err != nil {
+		panic(err)
+	}
+	log.Debug("Message: " + t.Message)
+	log.Debug("URL: " + t.RuleUrl)
+
+	start := time.Now()
+	event_time := start.UTC().Format("2006-01-02 15:04:05")
+
+	s := strings.Split(t.Message, ";")
+
+	// MESSAGE: ACTION;HOSTNAME;GROUP;SHORT_DESCRIPTION;DESCRIPTION
+	action := s[0]
+	hostname := s[1]
+	group := s[2]
+	desc_short := s[3]
+	MKey_description := s[4]
+
+	call_ok := false
+
+	switch action {
+	//  incident 'Hostname' 'Assigned Group' 'Short Description' 'Description'
+	//  event_x|alert_x 'Hostname' 'Assigned Group' 'Description' 'MessageKey'
+
+	case "incident":
+		log.Info("Opening Incident: hostname=" + hostname + " group=" + group)
+		call_ok = openIncident(group, desc_short, MKey_description, event_time, hostname, PROXYBUONO)
+
+	case "alert_critical":
+		log.Info("Opening Alert Critical: hostname=" + hostname + " group=" + group)
+		call_ok = openAlert(group, desc_short, MKey_description, "1", hostname, event_time, PROXYBUONO)
+
+	case "alert_info":
+		log.Info("Opening Alert Info: hostname=" + hostname + " group=" + group)
+		call_ok = openAlert(group, desc_short, MKey_description, "5", hostname, event_time, PROXYBUONO)
+
+	case "event_critical":
+		log.Info("Opening Event Critical: hostname=" + hostname + " group=" + group)
+		call_ok = openEvent(group, desc_short, MKey_description, "1", "Ready", hostname, PROXYBUONO)
+
+	case "event_info":
+		log.Info("Opening Event Info: hostname=" + hostname + " group=" + group)
+		call_ok = openEvent(group, desc_short, MKey_description, "5", "Processed", hostname, PROXYBUONO)
+
+	default:
+		log.Error("Action not found error")
+	}
+
+	if !call_ok {
+		log.Error("Error executing Task " + action + ", if you need to configure a proxy to reach ServiceNow API insert with one or a list of comma separated Proxy")
+	}
 }
